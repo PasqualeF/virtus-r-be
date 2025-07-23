@@ -22,6 +22,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 @Slf4j
 @Validated
+@CrossOrigin(origins = "*")
 public class ReservationController {
 
     private final ReservationService reservationService;

@@ -18,6 +18,7 @@ import java.util.Map;
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
 @Slf4j
+@CrossOrigin(origins = "*")
 @Validated
 public class AuthController {
 
