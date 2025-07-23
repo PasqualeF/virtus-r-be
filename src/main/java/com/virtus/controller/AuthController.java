@@ -18,7 +18,7 @@ import java.util.Map;
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
 @Slf4j
-@CrossOrigin(origins = "*")
+@CrossOrigin(origins = "https://virtustaranto.duckdns.org", allowCredentials = "true")
 @Validated
 public class AuthController {
 
