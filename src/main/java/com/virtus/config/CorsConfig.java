@@ -23,7 +23,8 @@ public class CorsConfig {
                 "http://127.0.0.1:*",
                 "https://127.0.0.1:*",
                 "http://virtustaranto.duckdns.org:*",
-                "https://virtustaranto.duckdns.org:*"
+                "https://virtustaranto.duckdns.org:*",
+                "https://195.201.238.79:*"
         ));
         config.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(Collections.singletonList("*"));
