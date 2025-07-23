@@ -26,8 +26,23 @@ public class CorsConfig {
                 "https://virtustaranto.duckdns.org",
                 "https://195.201.238.79:*"
         ));
+
         config.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(Collections.singletonList("*"));
+
+        // Specifica headers espliciti invece di "*"
+        config.setAllowedHeaders(Arrays.asList(
+                "Authorization",
+                "Content-Type",
+                "Accept",
+                "X-Requested-With",
+                "Cache-Control"
+        ));
+
+        config.setExposedHeaders(Arrays.asList(
+                "Authorization",
+                "Content-Type"
+        ));
+
         config.setAllowCredentials(true);
         config.setMaxAge(3600L);
 
