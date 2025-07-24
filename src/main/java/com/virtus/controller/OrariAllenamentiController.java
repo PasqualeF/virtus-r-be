@@ -16,7 +16,6 @@ import java.util.List;
 @RestController
 @RequestMapping("/orari-allenamenti")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "*")
 @Slf4j
 public class OrariAllenamentiController {
 

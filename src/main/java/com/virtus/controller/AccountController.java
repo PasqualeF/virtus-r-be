@@ -21,7 +21,6 @@ import java.util.Map;
 @RequiredArgsConstructor
 @Slf4j
 @Validated
-@CrossOrigin(origins = "*")
 public class AccountController {
 
     private final AccountService accountService;

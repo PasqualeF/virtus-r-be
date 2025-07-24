@@ -12,7 +12,6 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/dashboard")
 @RequiredArgsConstructor
 @Slf4j
-@CrossOrigin(origins = "*")
 public class DashboardController {
 
     private final DashboardService dashboardService;
