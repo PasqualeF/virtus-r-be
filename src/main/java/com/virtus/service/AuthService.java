@@ -46,6 +46,9 @@ public class AuthService {
                     .username(accountInfo.getUserName())
                     .firstName(accountInfo.getFirstName())
                     .lastName(accountInfo.getLastName())
+                    .email(accountInfo.getEmailAddress())
+                    .cell(accountInfo.getPhone())
+                    .organization(accountInfo.getOrganization())
                     .sessionToken(authResponse.getSessionToken())
                     .libreBookingUserId(authResponse.getUserId())
                     .sessionExpiry(calculateSessionExpiryFromBooking(authResponse.getSessionExpires()))
@@ -124,6 +127,9 @@ public class AuthService {
                     .username(claims.getUsername())
                     .firstName(claims.getFirstName())
                     .lastName(claims.getLastName())
+                    .emailAddress(claims.getEmail())
+                    .phone(claims.getCell())
+                    .organization(claims.getOrganization())
                     .build();
 
             return CurrentUserResponseDto.builder()

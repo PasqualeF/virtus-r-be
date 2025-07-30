@@ -18,5 +18,6 @@ public class LibreBookingReservationDto {
     private String resourceId;
     private String userId;
     private String duration;
+    private boolean requiresApproval;
     private String color;
 }

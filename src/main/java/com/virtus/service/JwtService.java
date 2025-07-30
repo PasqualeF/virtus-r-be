@@ -33,6 +33,9 @@ public class JwtService {
         Map<String, Object> claimsMap = new HashMap<>();
         claimsMap.put("userId", claims.getUserId());
         claimsMap.put("username", claims.getUsername());
+        claimsMap.put("email", claims.getEmail());
+        claimsMap.put("cell", claims.getCell());
+        claimsMap.put("organization", claims.getOrganization());
         claimsMap.put("firstName", claims.getFirstName());
         claimsMap.put("lastName", claims.getLastName());
         claimsMap.put("sessionToken", claims.getSessionToken());
@@ -98,6 +101,9 @@ public class JwtService {
                     .username(claims.get("username", String.class))
                     .firstName(claims.get("firstName", String.class))
                     .lastName(claims.get("lastName", String.class))
+                    .email(claims.get("email", String.class))
+                    .cell(claims.get("cell", String.class))
+                    .organization(claims.get("organization", String.class))
                     .sessionToken(claims.get("sessionToken", String.class))
                     .libreBookingUserId(claims.get("libreBookingUserId", String.class))
                     .sessionExpiry(claims.get("sessionExpiry", Long.class))

@@ -26,6 +26,7 @@ public class ReservationService {
     private final WebClient webClient;
     private final LibreBookingProperties properties;
     private final JwtService jwtService;
+    private final EmailService emailService;
    // private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssXXX");
 // Formatter con timezone per LibreBooking
 
@@ -58,6 +59,9 @@ public class ReservationService {
                     .username(claims.getUsername())
                     .firstName(claims.getFirstName())
                     .lastName(claims.getLastName())
+                    .emailAddress(claims.getEmail())
+                    .phone(claims.getCell())
+                    .organization(claims.getOrganization())
                     .build();
             // Validazioni business logic
             validateReservationData(reservationData);
@@ -81,7 +85,9 @@ public class ReservationService {
 
             // Mappa la risposta per il frontend
             ReservationCreatedDto result = mapToFrontendResponse(response, reservationData);
-
+            if(result!=null && result.getSuccess() && result.getIsPendingApproval()){
+                emailService.inviaNotificaRservation(userInfo,result);
+            }
             return result;
 
         } catch (RuntimeException e) {
@@ -113,6 +119,9 @@ public class ReservationService {
                     .username(claims.getUsername())
                     .firstName(claims.getFirstName())
                     .lastName(claims.getLastName())
+                    .emailAddress(claims.getEmail())
+                    .phone(claims.getCell())
+                    .organization(claims.getOrganization())
                     .build();
             // Validazioni business logic
             validateReservationData(reservationData);
@@ -136,7 +145,9 @@ public class ReservationService {
 
             // Mappa la risposta per il frontend
             ReservationCreatedDto result = mapToFrontendResponse(response, reservationData);
-
+            if(result!=null && result.getSuccess() && result.getIsPendingApproval()){
+                emailService.inviaNotificaRservationUpdate(userInfo,result);
+            }
             return result;
 
         } catch (RuntimeException e) {

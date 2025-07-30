@@ -118,7 +118,7 @@ public class OrariAllenamentiService {
 
 
             List<LibreBookingReservationDto> allReservations = response != null ? response.getReservations() : List.of();
-
+            allReservations = allReservations.stream().filter(res -> !res.isRequiresApproval()).toList();
             // 🔍 Filtro per resourceName se specificato
             if (resourceNameFilter != null && !resourceNameFilter.isBlank()) {
                 return allReservations.stream()

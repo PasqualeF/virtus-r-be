@@ -15,6 +15,8 @@ public class LibreBookingProperties {
     private String authEndpoint;
     private String reservationsEndpoint;
     private String accountsEndpoint;
+    private String resApprove;
+    private String calendarUrl;
     private Credentials credentials = new Credentials();
     private Cache cache = new Cache();
     private DateRange dateRange = new DateRange();
