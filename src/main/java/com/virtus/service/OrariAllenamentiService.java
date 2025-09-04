@@ -2,20 +2,22 @@ package com.virtus.service;
 
 import com.virtus.config.LibreBookingProperties;
 import com.virtus.dto.*;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.http.*;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
 import org.springframework.web.reactive.function.client.WebClient;
 
-import java.time.DayOfWeek;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
+import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -27,80 +29,115 @@ public class OrariAllenamentiService {
     private final WebClient webClient;
     private final LibreBookingProperties properties;
 
-    // Cache in memoria (no database)
+    @Qualifier("simpleRestTemplate")
+    private final RestTemplate restTemplate;
+
+    // Cache in memoria
     private LibreBookingAuthResponse currentAuth;
     private LocalDateTime lastAuthTime;
+    private static final Object AUTH_LOCK = new Object();
+    private static final int AUTH_VALIDITY_MINUTES = 25;
 
-    @Cacheable(value = "orari-allenamenti", key = "'all'")
-    public List<OrarioAllenamentoDto> getOrariAllenamenti() {
+    @PostConstruct
+    public void init() {
+        // Pre-warm della connessione all'avvio
+        prewarmConnection();
+    }
 
+    /**
+     * Pre-riscalda la connessione TCP all'avvio per ridurre latenza prima chiamata
+     */
+    private void prewarmConnection() {
         try {
-            // 1. Autentica
-            LibreBookingAuthResponse auth = authenticate();
+            HttpHeaders headers = new HttpHeaders();
+            headers.setAccept(Collections.singletonList(MediaType.ALL));
+            HttpEntity<Void> entity = new HttpEntity<>(headers);
 
-            // 2. Recupera reservations (sempre 2 settimane per sicurezza)
-            List<LibreBookingReservationDto> reservations = getReservations(auth, 2, null);
-
-            // 3. Filtra per la settimana target e trasforma in formato Angular
-            return reservations.stream()
-                    .filter(this::isInTargetWeek)
-                    .map(this::mapToOrarioAllenamento)
-                    .collect(Collectors.toList());
-
+            restTemplate.exchange(
+                    properties.getBaseUrl(),
+                    HttpMethod.HEAD,
+                    entity,
+                    String.class
+            );
+            log.info("Connection pre-warmed successfully");
         } catch (Exception e) {
-            log.error("Errore recupero da LibreBooking", e);
-            return getFallbackData();
+            // Non critico, continua comunque
         }
     }
 
-    @Cacheable(value = "prenotazioni-per-palestra", key = "'all'")
+    @Cacheable(value = "orari-allenamenti", key = "'all'")
+    public List<OrarioAllenamentoDto> getOrariAllenamenti() {
+        return getOrariAllenamentiWithRetry(3);
+    }
+
+    private List<OrarioAllenamentoDto> getOrariAllenamentiWithRetry(int maxRetries) {
+        Exception lastException = null;
+
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                // 1. Autentica
+                LibreBookingAuthResponse auth = authenticate();
+
+                // 2. Recupera reservations
+                List<LibreBookingReservationDto> reservations = getReservations(auth, 2, null);
+
+                // 3. Filtra per la settimana target e trasforma
+                List<OrarioAllenamentoDto> mappedResults = reservations.stream()
+                        .filter(this::isInTargetWeek)
+                        .map(this::mapToOrarioAllenamento)
+                        .collect(Collectors.toList());
+
+                return mappedResults;
+
+            } catch (Exception e) {
+                lastException = e;
+                log.error("Attempt {}/{} failed: {}", attempt, maxRetries, e.getMessage());
+
+                if (attempt < maxRetries) {
+                    try {
+                        Thread.sleep(attempt * 1000L);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+
+        log.error("All {} attempts failed. Returning fallback data. Last error: {}",
+                maxRetries, lastException != null ? lastException.getMessage() : "Unknown error");
+        return getFallbackData();
+    }
+
+    @Cacheable(value = "prenotazioni-per-palestra", key = "#nomePalestra")
     public List<OrarioAllenamentoDto> getPrenotazioniForPalestra(String nomePalestra) {
-
         try {
-            // 1. Autentica
             LibreBookingAuthResponse auth = authenticate();
-
-            // 2. Recupera reservations
             List<LibreBookingReservationDto> reservations = getReservations(auth, 4, nomePalestra);
 
-            // 3. Filtra per la settimana target e trasforma in formato Angular
             return reservations.stream()
                     .filter(this::isInTargetWeek)
                     .map(this::mapToOrarioAllenamento)
                     .collect(Collectors.toList());
 
         } catch (Exception e) {
-            log.error("Errore recupero da LibreBooking", e);
+            log.error("Error retrieving data from LibreBooking: {}", e.getMessage());
             return getFallbackData();
         }
     }
 
     /**
      * Determina se una prenotazione appartiene alla settimana target
-     * Logica:
-     * - Se oggi è Lunedì-Sabato: restituisce la settimana corrente
-     * - Se oggi è Domenica dopo le 14:00: restituisce la settimana successiva
-     * - Se oggi è Domenica prima delle 14:00: restituisce la settimana corrente
      */
     private boolean isInTargetWeek(LibreBookingReservationDto reservation) {
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime targetWeekStart = getTargetWeekStart(now);
         LocalDateTime targetWeekEnd = targetWeekStart.plusDays(6).withHour(23).withMinute(59).withSecond(59);
 
-        // Usa la conversione del fuso orario per la data della prenotazione
         LocalDateTime reservationStart = convertToLocalTimezone(reservation.getStartDate());
 
-        boolean isInWeek = !reservationStart.isBefore(targetWeekStart) &&
+        return !reservationStart.isBefore(targetWeekStart) &&
                 !reservationStart.isAfter(targetWeekEnd);
-
-        log.debug("🔍 Reservation {} - Start: {} | Target week: {} to {} | In week: {}",
-                reservation.getTitle(),
-                reservationStart.format(DateTimeFormatter.ofPattern("EEEE dd/MM/yyyy HH:mm")),
-                targetWeekStart.format(DateTimeFormatter.ofPattern("EEEE dd/MM/yyyy")),
-                targetWeekEnd.format(DateTimeFormatter.ofPattern("EEEE dd/MM/yyyy")),
-                isInWeek);
-
-        return isInWeek;
     }
 
     /**
@@ -109,55 +146,126 @@ public class OrariAllenamentiService {
     private LocalDateTime getTargetWeekStart(LocalDateTime now) {
         DayOfWeek currentDay = now.getDayOfWeek();
 
-        if (currentDay == DayOfWeek.SUNDAY && now.getHour() >= 14) {
-            // Domenica dopo le 14:00 -> settimana successiva
-            LocalDateTime nextMonday = now.plusDays(1)
-                    .withHour(0)
-                    .withMinute(0)
-                    .withSecond(0)
-                    .withNano(0);
-
-            log.debug("📅 Domenica pomeriggio -> Settimana SUCCESSIVA da: {}",
-                    nextMonday.format(DateTimeFormatter.ofPattern("EEEE dd/MM/yyyy")));
-            return nextMonday;
+        if (currentDay == DayOfWeek.SATURDAY && now.getHour() >= 8) {
+            // Sabato dopo le 8:00 -> settimana successiva
+            return now.plusDays(1)
+                    .withHour(0).withMinute(0).withSecond(0).withNano(0);
         } else {
             // Tutti gli altri casi -> settimana corrente
             int daysToSubtract = currentDay.getValue() - DayOfWeek.MONDAY.getValue();
-            LocalDateTime currentMonday = now.minusDays(daysToSubtract)
-                    .withHour(0)
-                    .withMinute(0)
-                    .withSecond(0)
-                    .withNano(0);
-
-            log.debug("📅 Settimana CORRENTE da: {}",
-                    currentMonday.format(DateTimeFormatter.ofPattern("EEEE dd/MM/yyyy")));
-            return currentMonday;
+            return now.minusDays(daysToSubtract)
+                    .withHour(0).withMinute(0).withSecond(0).withNano(0);
         }
     }
 
+    /**
+     * Sistema di autenticazione con cache
+     */
     private LibreBookingAuthResponse authenticate() {
         if (isAuthValid()) {
             return currentAuth;
         }
 
-        LibreBookingAuthRequest request = LibreBookingAuthRequest.builder()
-                .username(properties.getCredentials().getUsername())
-                .password(properties.getCredentials().getPassword())
-                .build();
+        synchronized (AUTH_LOCK) {
+            // Double-check pattern
+            if (isAuthValid()) {
+                return currentAuth;
+            }
 
-        LibreBookingAuthResponse response = webClient.post()
-                .uri(properties.getBaseUrl() + properties.getAuthEndpoint())
-                .bodyValue(request)
-                .retrieve()
-                .bodyToMono(LibreBookingAuthResponse.class)
-                .block();
-
-        currentAuth = response;
-        lastAuthTime = LocalDateTime.now();
-
-        return response;
+            return performAuthentication();
+        }
     }
 
+    /**
+     * Esegue l'autenticazione effettiva con retry
+     */
+    private LibreBookingAuthResponse performAuthentication() {
+        Exception lastException = null;
+
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                LibreBookingAuthRequest request = LibreBookingAuthRequest.builder()
+                        .username(properties.getCredentials().getUsername())
+                        .password(properties.getCredentials().getPassword())
+                        .build();
+
+                HttpHeaders headers = new HttpHeaders();
+                headers.setContentType(MediaType.APPLICATION_JSON);
+                headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
+                headers.add("Connection", "keep-alive");
+
+                HttpEntity<LibreBookingAuthRequest> entity = new HttpEntity<>(request, headers);
+                String authUrl = properties.getBaseUrl() + properties.getAuthEndpoint();
+
+                ResponseEntity<LibreBookingAuthResponse> response = restTemplate.exchange(
+                        authUrl,
+                        HttpMethod.POST,
+                        entity,
+                        LibreBookingAuthResponse.class
+                );
+
+                if (response.getBody() != null && response.getBody().getSessionToken() != null) {
+                    currentAuth = response.getBody();
+                    lastAuthTime = LocalDateTime.now();
+                    return currentAuth;
+                } else {
+                    throw new RuntimeException("Invalid authentication response: missing token");
+                }
+
+            } catch (Exception e) {
+                lastException = e;
+
+                if (attempt < 3) {
+                    try {
+                        Thread.sleep(500L * attempt);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("Interrupted during retry", ie);
+                    }
+                }
+            }
+        }
+
+        throw new RuntimeException("Authentication failed after 3 attempts", lastException);
+    }
+
+    /**
+     * Verifica se l'autenticazione cached è ancora valida
+     */
+    private boolean isAuthValid() {
+        return currentAuth != null &&
+                lastAuthTime != null &&
+                lastAuthTime.plusMinutes(AUTH_VALIDITY_MINUTES).isAfter(LocalDateTime.now());
+    }
+
+    /**
+     * Pre-autentica in background (opzionale)
+     */
+    @Async
+    public void preAuthenticate() {
+        if (!isAuthValid()) {
+            try {
+                authenticate();
+            } catch (Exception e) {
+                log.warn("Pre-authentication failed: {}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Forza il refresh dell'autenticazione
+     */
+    public void forceAuthRefresh() {
+        synchronized (AUTH_LOCK) {
+            currentAuth = null;
+            lastAuthTime = null;
+            authenticate();
+        }
+    }
+
+    /**
+     * Recupera le prenotazioni dal servizio LibreBooking
+     */
     private List<LibreBookingReservationDto> getReservations(LibreBookingAuthResponse auth, long weeks, String resourceNameFilter) {
         LocalDateTime startDate = getMondayOfCurrentWeek();
         LocalDateTime endDate = startDate.plusWeeks(weeks);
@@ -180,10 +288,15 @@ public class OrariAllenamentiService {
                     .bodyToMono(LibreBookingReservationsResponse.class)
                     .block();
 
-            List<LibreBookingReservationDto> allReservations = response != null ? response.getReservations() : List.of();
-            allReservations = allReservations.stream().filter(res -> !res.isRequiresApproval()).toList();
+            List<LibreBookingReservationDto> allReservations = response != null ?
+                    response.getReservations() : List.of();
 
-            // 🔍 Filtro per resourceName se specificato
+            // Filtra le prenotazioni che non richiedono approvazione
+            allReservations = allReservations.stream()
+                    .filter(res -> !res.isRequiresApproval())
+                    .toList();
+
+            // Filtra per resourceName se specificato
             if (resourceNameFilter != null && !resourceNameFilter.isBlank()) {
                 return allReservations.stream()
                         .filter(res -> resourceNameFilter.equalsIgnoreCase(res.getResourceName()))
@@ -193,19 +306,17 @@ public class OrariAllenamentiService {
             return allReservations;
 
         } catch (Exception e) {
-            log.error("❌ Errore LibreBooking: {}", e.getMessage());
-            throw new RuntimeException("Errore comunicazione LibreBooking: " + e.getMessage(), e);
+            log.error("Error communicating with LibreBooking: {}", e.getMessage());
+            throw new RuntimeException("LibreBooking communication error: " + e.getMessage(), e);
         }
     }
 
+    /**
+     * Mappa una prenotazione LibreBooking in OrarioAllenamentoDto
+     */
     private OrarioAllenamentoDto mapToOrarioAllenamento(LibreBookingReservationDto reservation) {
-        // Converti le date dal fuso orario dell'API al fuso orario locale (+2)
         LocalDateTime startDateTime = convertToLocalTimezone(reservation.getStartDate());
         LocalDateTime endDateTime = convertToLocalTimezone(reservation.getEndDate());
-
-        log.debug("🕐 Conversione orario - Original: {} -> Local: {}",
-                reservation.getStartDate(),
-                startDateTime.format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")));
 
         return OrarioAllenamentoDto.builder()
                 .gruppo(reservation.getFirstName() + " " + reservation.getLastName())
@@ -223,25 +334,21 @@ public class OrariAllenamentiService {
     }
 
     /**
-     * Converte una data/ora dal formato dell'API al fuso orario locale (+2)
-     * Gestisce diversi formati di input e fusi orari
+     * Converte una data/ora dal formato dell'API al fuso orario locale
      */
     private LocalDateTime convertToLocalTimezone(String dateTimeString) {
         try {
-            // Rimuovi il fuso orario se presente per fare un parsing pulito
             String cleanDateTime = dateTimeString.replaceAll("[+-]\\d{4}$", "").trim();
 
-            // Parsing della data come LocalDateTime
             LocalDateTime parsedDateTime;
             try {
                 parsedDateTime = LocalDateTime.parse(cleanDateTime);
             } catch (DateTimeParseException e) {
-                // Prova con formato alternativo se il parsing standard fallisce
                 parsedDateTime = LocalDateTime.parse(cleanDateTime,
                         DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
             }
 
-            // Determina il fuso orario di origine dall'API
+            // Determina il fuso orario di origine
             ZoneId sourceZone;
             if (dateTimeString.contains("+0000") || dateTimeString.endsWith("Z")) {
                 sourceZone = ZoneId.of("UTC");
@@ -250,36 +357,20 @@ public class OrariAllenamentiService {
             } else if (dateTimeString.contains("+0200")) {
                 sourceZone = ZoneId.of("+02:00");
             } else {
-                // Default: assumiamo UTC se non specificato
                 sourceZone = ZoneId.of("UTC");
-                log.warn("⚠️ Fuso orario non riconosciuto in '{}', assumo UTC", dateTimeString);
             }
 
-            // Fuso orario target (Italia/Roma = +2 in estate, +1 in inverno)
+            // Converti al fuso orario target (Europe/Rome)
             ZoneId targetZone = ZoneId.of("Europe/Rome");
-
-            // Converti al fuso orario target
             ZonedDateTime sourceZonedDateTime = parsedDateTime.atZone(sourceZone);
             ZonedDateTime targetZonedDateTime = sourceZonedDateTime.withZoneSameInstant(targetZone);
 
-            LocalDateTime result = targetZonedDateTime.toLocalDateTime();
-
-            log.debug("🌍 Timezone conversion: {} ({}) -> {} ({})",
-                    parsedDateTime, sourceZone, result, targetZone);
-
-            return result;
+            return targetZonedDateTime.toLocalDateTime();
 
         } catch (Exception e) {
-            log.error("❌ Errore conversione timezone per '{}': {}", dateTimeString, e.getMessage());
-            // Fallback: parsing semplice senza conversione
+            log.error("Error converting timezone for '{}': {}", dateTimeString, e.getMessage());
             return LocalDateTime.parse(dateTimeString.replace("+0000", "").trim());
         }
-    }
-
-    private boolean isAuthValid() {
-        return currentAuth != null &&
-                lastAuthTime != null &&
-                lastAuthTime.plusMinutes(30).isAfter(LocalDateTime.now());
     }
 
     private String getGiornoSettimana(LocalDateTime dateTime) {
@@ -300,13 +391,11 @@ public class OrariAllenamentiService {
                         .orario("18:00-20:00")
                         .palestra("Palestra A")
                         .build()
-                // ... altri dati fallback
         );
     }
 
     @CacheEvict(value = "orari-allenamenti", allEntries = true)
     public List<OrarioAllenamentoDto> refreshOrariAllenamenti() {
-        log.warn("🔄 CACHE EVICT - Forzando refresh...");
         return getOrariAllenamenti();
     }
 
@@ -315,19 +404,10 @@ public class OrariAllenamentiService {
      */
     private LocalDateTime getMondayOfCurrentWeek() {
         LocalDateTime now = LocalDateTime.now();
-
-        // Trova il lunedì della settimana corrente
         DayOfWeek currentDay = now.getDayOfWeek();
         int daysToSubtract = currentDay.getValue() - DayOfWeek.MONDAY.getValue();
 
-        LocalDateTime monday = now.minusDays(daysToSubtract)
-                .withHour(0)
-                .withMinute(0)
-                .withSecond(0)
-                .withNano(0);
-
-        log.debug("📅 Lunedì settimana corrente: {}", monday.format(DateTimeFormatter.ofPattern("EEEE dd/MM/yyyy HH:mm")));
-
-        return monday;
+        return now.minusDays(daysToSubtract)
+                .withHour(0).withMinute(0).withSecond(0).withNano(0);
     }
 }
